@@ -120,15 +120,16 @@ for dirpath, dirnames, filenames in os.walk(input_path): # dirpath, dirname, fil
                 tool_image = cv2.warpPerspective(grayscale_image, transformation_matrix, (stage_edge_pixels, stage_edge_pixels))
 
                 contours = defineContours(tool_image, current_fill_tolerance)[1:]
-                cv2.drawContours(tool_image, contours, -1, (255, 0, 0), 50)
                 if debug:
+                    tool_image = cv2.cvtColor(tool_image, cv2.COLOR_GRAY2RGB)
+                    cv2.drawContours(tool_image, contours, -1, (255, 0, 0), 25)
                     test_tools_small = imutils.resize(tool_image, width=500)
                     cv2.imshow('Tool Contours', test_tools_small)
-                    cv2.waitKey(1)
+                    cv2.waitKey(0)
 
                 contours = [contour for contour in contours if contourArea(contour) > current_min_tool_area] # Remove contours below minimum_tool_area (despeckling)
 
-                image_scaling = stage_size_x/stage_edge_pixels
+                image_scaling = stage_size_x/stage_edge_pixels 
 
                 lines = []
                 new_contours = []
@@ -166,7 +167,8 @@ for dirpath, dirnames, filenames in os.walk(input_path): # dirpath, dirname, fil
                         _ = transform.translate(msp, -np.average([np.average(new_contours[i-1], 0) for i in range(0,len(new_contours))], 0)[0])
                         _ = transform.scale(msp, sx=image_scaling, sy=-image_scaling, sz=image_scaling)
                         dwg.saveas(getUnique(output_regex, output_path, source_name, 'dxf'))
-                        os.renames(source_file, storage_file)
+                        if not debug:
+                            os.renames(source_file, storage_file)
                         break
                     else:
                         for contour_index in range(0,len(new_contours)):
@@ -187,7 +189,8 @@ for dirpath, dirnames, filenames in os.walk(input_path): # dirpath, dirname, fil
                                 _ = transform.z_rotate(msp, -np.arctan(max_diff[1]/max_diff[0]))
                             _ = transform.scale(msp, sx=image_scaling, sy=-image_scaling, sz=image_scaling)
                             dwg.saveas(getUnique(output_regex, output_path, source_name, 'dxf'))
-                        os.renames(source_file, storage_file)
+                        if not debug:
+                            os.renames(source_file, storage_file)
                         break
                 else:
                     if current_min_tool_area > final_min_tool_area:
