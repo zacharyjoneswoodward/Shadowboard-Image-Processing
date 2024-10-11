@@ -28,6 +28,7 @@ stage_size_y = stage_size_x
 
 output_regex = r' \((\d+)\).\w+' # Regex for finding existing filenames, used to create unique filename - Searches for a number in parethesis followed by a file extension "([number]).[extension]"
 
+flood_tolerance = 220
 initial_min_tool_area = 80000 # Number to set the minimum area in pixels of a tool
 final_min_tool_area = 10000 # Fallback until this value if no outlines are found
 initial_poly_approx = 4 # Maximum distance a node can be moved during contour smoothing
@@ -35,21 +36,16 @@ initial_fill_tolerance = 25 # Inverted tolerance of the fill algorithm 0-100 (de
 stage_fill_tolerance = 75 # Inverted tolerance for stage detection (default 75)
 
 
-if not os.path.isdir(image_folder):
-    input(f"The image folder was not found, it was expected at '{image_folder}'")
-    raise FileNotFoundError
-
-input_path = image_folder + input_folder # Build input folder path # TODO Use os.path?
-if not os.path.isdir(input_path):
-    input(f"The input folder was not found, it was expected at '{input_path}'")
-    raise FileNotFoundError
-
-
-combine_output = (input('Combine tools to single output? y/n (n):\n') or combine_output)
-combine_output = combine_output.casefold() in ('true', 'y', 'yes')
-if not combine_output:
-    rotate_to_longest = (input('Rotate longest line to horizontal? y/n (n):\n') or rotate_to_longest)
-    rotate_to_longest = rotate_to_longest.casefold() in ('true', 'y', 'yes')
+input_path = image_folder + input_folder # Build input folder path
+if debug:
+    combine_output = True
+    rotate_to_longest = False
+else:
+    combine_output = (input('Combine tools to single output? y/n (n):\n') or combine_output)
+    combine_output = combine_output.casefold() in ('true', 'y', 'yes')
+    if not combine_output:
+        rotate_to_longest = (input('Rotate longest line to horizontal? y/n (n):\n') or rotate_to_longest)
+        rotate_to_longest = rotate_to_longest.casefold() in ('true', 'y', 'yes')
 
 
 def getUnique(regex, path, filename, extension):  # Finds highest numbered file in given format and location and returns a unique filename 1 higher
@@ -64,16 +60,36 @@ def contourArea(contour_path): # Function to return area in pixels of given cont
     _, _, w, h = cv2.boundingRect(contour_path)
     return w*h
 
-def defineContours(grayscale_image, fill_tolerance): # Function to return contours given an image and tolerance
-    flood_mask = flood(grayscale_image, (400, 3000), tolerance=fill_tolerance) # Point was arbitrarily chosen as a neutrally lighted point in the light part of the image, calculations will fail if conditions are not met (Low priority TODO: Make this a programatically chosen point)
-    flood_image = np.zeros(flood_mask.shape)
-    np.putmask(flood_image, flood_mask, 255)
-    flood_image = flood_image.astype(np.uint8)
-    if debug:
-        cv2.imwrite(f'{output_path}output.png', flood_image)
-    contours, _ = cv2.findContours(flood_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    return contours
+def findStage(contours, hierarchy):
+    external = np.nonzero(hierarchy[0][:,3] == -1)
+    num_external = len(external[0])
+    if num_external < 1:
+        return None
+    elif num_external == 1:
+        return external[0][0]
+    else:
+        parent = [i for i in range(0, hierarchy[0].shape[0]) if i in external[0] and hierarchy[0][i,2] != -1]
+        if len(parent) < 1:
+            return None
+        elif len(parent) == 1:
+            return parent[0]
+        else:
+            largestArea = -1
+            largestIndex = -1
+            for i in range(0, hierarchy[0].shape[0]):
+                currentArea = contourArea(contours[i])
+                if i in parent and currentArea > largestArea:
+                    largestArea = currentArea
+                    largestIndex = i
+            return largestIndex
 
+def defineContours(grayscale_image): # Function to return contours given an image and tolerance
+    flood_mask = grayscale_image >= flood_tolerance
+    flood_image = flood_mask.astype(np.uint8) * 255
+    if debug:
+        cv2.imwrite(f'{output_path}mask.png', flood_image)
+    contours, hierarchy = cv2.findContours(flood_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    return contours, hierarchy
 
 for dirpath, dirnames, filenames in os.walk(input_path): # dirpath, dirname, filename
     if any([filename.casefold().endswith(('.png', '.jpg', 'jpeg', '.bmp')) for filename in filenames]):
@@ -107,9 +123,15 @@ for dirpath, dirnames, filenames in os.walk(input_path): # dirpath, dirname, fil
                     os.makedirs(output_path, exist_ok=True)
                     print(f'Reading from {source_file}')
                     
-                stage_contour = defineContours(grayscale_image, stage_fill_tolerance)[0]
+                stage_contours, stage_hierarchy = defineContours(grayscale_image)
+                stage_index = findStage(stage_contours, stage_hierarchy)
+                stage_contour = stage_contours[stage_index]
                 stage_contour = cv2.approxPolyDP(stage_contour, 100, closed=True)
-
+                if not stage_contour.shape == (4, 1, 2):
+                    print(f"\x1B[31mError while processing file {source_file}. The script was unable to discern the corners of the light panel. Please ensure that the entire light panel is visible within the camera preview before capturing images. This image will be marked as invalid.\x1B[0m")
+                    if not debug:
+                        os.renames(source_file, f'{source_file}.invalid')
+                    break
                 stage_contour_sorted = np.float32(stage_contour[(stage_contour*[[[1, 4]]]).sum(axis=2).argsort(axis=0)].squeeze()) # Sort stage contour corners as top left, top right, bottom left, bottom right
                     # Start by weighting the Y values higher than X by a factor of four, then get the sum of each of the coordinate pairs, then sort these. Sorting the coordinates alone cannot deconflict the bottom left and top right corners, the Y modifier biases this enough to separate them
                         # 0 1
@@ -118,8 +140,10 @@ for dirpath, dirnames, filenames in os.walk(input_path): # dirpath, dirname, fil
                 new_stage_contour = np.float32([[0, 0], [stage_edge_pixels, 0], [0, stage_edge_pixels], [stage_edge_pixels, stage_edge_pixels]])
                 transformation_matrix = cv2.getPerspectiveTransform(stage_contour_sorted, new_stage_contour)
                 tool_image = cv2.warpPerspective(grayscale_image, transformation_matrix, (stage_edge_pixels, stage_edge_pixels))
-
-                contours = defineContours(tool_image, current_fill_tolerance)[1:]
+                
+                contours, hierarchy = defineContours(tool_image)
+                stage_index = findStage(contours, hierarchy)
+                contours = [contours[i] for i in range(0, hierarchy[0].shape[0]) if hierarchy[0][i,3] == stage_index]
                 if debug:
                     tool_image = cv2.cvtColor(tool_image, cv2.COLOR_GRAY2RGB)
                     cv2.drawContours(tool_image, contours, -1, (255, 0, 0), 25)
@@ -129,8 +153,8 @@ for dirpath, dirnames, filenames in os.walk(input_path): # dirpath, dirname, fil
 
                 contours = [contour for contour in contours if contourArea(contour) > current_min_tool_area] # Remove contours below minimum_tool_area (despeckling)
 
-                image_scaling = stage_size_x/stage_edge_pixels 
-
+                image_scaling = stage_size_x/stage_edge_pixels
+                
                 lines = []
                 new_contours = []
                 if contours:
@@ -198,9 +222,9 @@ for dirpath, dirnames, filenames in os.walk(input_path): # dirpath, dirname, fil
                         current_fill_tolerance += 1
                         current_poly_approx += 1
                         if debug:
-                            print(f"No contours found in file {filename}, retrying with minimum tool area {current_min_tool_area} pixels, fill tolerance {current_fill_tolerance}")
+                            print(f"No contours found in file {source_file}, retrying with minimum tool area {current_min_tool_area} pixels, fill tolerance {current_fill_tolerance}")
                     else:
-                        print(f'No contours found in file {filename}, check tolerance and despeckling settings')
+                        print(f'No contours found in file {source_file}, check tolerance and despeckling settings')
                         break
 
 os.makedirs(input_path, exist_ok=True)
