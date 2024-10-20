@@ -1,1 +1,16 @@
-Images/*
+Images/*.JPG
+Images/*.PNG
+Images/*.BMP
+Images/*.JPEG
+
+Images/Development Scripts
+
+Images/Input/*
+!Images/Input/.gitkeep
+Images/Output/*
+!Images/Output/.gitkeep
+Images/Storage/*
+!Images/Storage/.gitkeep
+
+debug.log
+.tests/__pycache__
