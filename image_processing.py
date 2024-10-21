@@ -28,7 +28,8 @@ stage_size_y = stage_size_x
 
 output_regex = r' \((\d+)\).\w+' # Regex for finding existing filenames, used to create unique filename - Searches for a number in parethesis followed by a file extension "([number]).[extension]"
 
-flood_tolerance = 220
+stage_flood_tolerance = 200 # Darkest value to be considered as a "light" pixel for flood algorithm
+tool_flood_tolerance = 220
 initial_min_tool_area = 80000 # Number to set the minimum area in pixels of a tool
 final_min_tool_area = 10000 # Fallback until this value if no outlines are found
 initial_poly_approx = 4 # Maximum distance a node can be moved during contour smoothing
@@ -83,7 +84,7 @@ def findStage(contours, hierarchy):
                     largestIndex = i
             return largestIndex
 
-def defineContours(grayscale_image): # Function to return contours given an image and tolerance
+def defineContours(grayscale_image, flood_tolerance): # Function to return contours given an image and tolerance
     flood_mask = grayscale_image >= flood_tolerance
     flood_image = flood_mask.astype(np.uint8) * 255
     if debug:
@@ -123,15 +124,18 @@ for dirpath, dirnames, filenames in os.walk(input_path): # dirpath, dirname, fil
                     os.makedirs(output_path, exist_ok=True)
                     print(f'Reading from {source_file}')
                     
-                stage_contours, stage_hierarchy = defineContours(grayscale_image)
+                stage_contours, stage_hierarchy = defineContours(grayscale_image, stage_flood_tolerance)
                 stage_index = findStage(stage_contours, stage_hierarchy)
                 stage_contour = stage_contours[stage_index]
                 stage_contour = cv2.approxPolyDP(stage_contour, 100, closed=True)
                 if not stage_contour.shape == (4, 1, 2):
-                    print(f"\x1B[31mError while processing file {source_file}. The script was unable to discern the corners of the light panel. Please ensure that the entire light panel is visible within the camera preview before capturing images. This image will be marked as invalid.\x1B[0m")
+                    input(f"\x1B[31mERROR: Error while processing {source_file}.\nThe script was unable to discern the corners of the light panel. Please ensure that the entire light panel is visible within the camera preview before capturing images.\nThis image will be marked as invalid.\nPress enter to continue.\x1B[0m")
                     if not debug:
                         os.renames(source_file, f'{source_file}.invalid')
                     break
+                for point in stage_contour:
+                    if point[0,0] in (0, grayscale_image.shape[1]) or point[0,1] in (0, grayscale_image.shape[0]):
+                        input(f"\x1B[33mWARNING: Warning while processing file {source_file}.\nThe script may be unable to discern the proper corners of the light panel. Please ensure that the entire light panel is visible within the camera preview before capturing images.\nThis image will be processed but scaling may be incorrect. \nPress enter to continue.\x1B[0m")
                 stage_contour_sorted = np.float32(stage_contour[(stage_contour*[[[1, 4]]]).sum(axis=2).argsort(axis=0)].squeeze()) # Sort stage contour corners as top left, top right, bottom left, bottom right
                     # Start by weighting the Y values higher than X by a factor of four, then get the sum of each of the coordinate pairs, then sort these. Sorting the coordinates alone cannot deconflict the bottom left and top right corners, the Y modifier biases this enough to separate them
                         # 0 1
@@ -141,7 +145,7 @@ for dirpath, dirnames, filenames in os.walk(input_path): # dirpath, dirname, fil
                 transformation_matrix = cv2.getPerspectiveTransform(stage_contour_sorted, new_stage_contour)
                 tool_image = cv2.warpPerspective(grayscale_image, transformation_matrix, (stage_edge_pixels, stage_edge_pixels))
                 
-                contours, hierarchy = defineContours(tool_image)
+                contours, hierarchy = defineContours(tool_image, tool_flood_tolerance)
                 stage_index = findStage(contours, hierarchy)
                 contours = [contours[i] for i in range(0, hierarchy[0].shape[0]) if hierarchy[0][i,3] == stage_index]
                 if debug:
